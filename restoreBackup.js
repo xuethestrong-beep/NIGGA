@@ -4,19 +4,34 @@ const readline = require("readline");
 const log = require('./logger/log.js');
 
 let versionBackup;
+const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout
-});
+const SKIP_DIRS = new Set(["backups", "node_modules", ".git"]);
 
 function isSafeVersion(str) {
-  return /^[a-zA-Z0-9._-]+$/.test(str);
+  if (!str || typeof str !== "string") return false;
+  if (str === "." || str === "..") return false;
+  return /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(str);
+}
+
+function isSafeEntry(name) {
+  if (!name || typeof name !== "string") return false;
+  if (name === "." || name === "..") return false;
+  if (SKIP_DIRS.has(name)) return false;
+  return /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(name);
 }
 
 async function recursiveReadDirAndBackup(relativePath, backupRoot) {
   const backupPath = path.join(backupRoot, relativePath);
   const restorePath = path.join(process.cwd(), relativePath);
+
+  // Ensure restorePath stays inside cwd
+  const cwd = path.resolve(process.cwd());
+  const resolvedRestore = path.resolve(restorePath);
+  if (resolvedRestore !== cwd && !resolvedRestore.startsWith(cwd + path.sep)) {
+    log.warn("RESTORE", `Skip escape attempt: ${relativePath}`);
+    return;
+  }
 
   let stat;
   try {
@@ -35,11 +50,15 @@ async function recursiveReadDirAndBackup(relativePath, backupRoot) {
     await fs.ensureDir(restorePath);
     const entries = await fs.readdir(backupPath);
     for (const entry of entries) {
+      if (!isSafeEntry(entry)) {
+        log.warn("RESTORE", `Skip unsafe entry: ${path.join(relativePath, entry)}`);
+        continue;
+      }
       await recursiveReadDirAndBackup(path.join(relativePath, entry), backupRoot);
     }
   } else if (stat.isFile()) {
     await fs.ensureDir(path.dirname(restorePath));
-    await fs.copy(backupPath, restorePath, { overwrite: true });
+    await fs.copy(backupPath, restorePath, { overwrite: true, dereference: false });
   }
 }
 
@@ -60,9 +79,8 @@ async function recursiveReadDirAndBackup(relativePath, backupRoot) {
 
     // sanitize: remove backup_ prefix if user typed it, then validate
     versionBackup = versionBackup.replace(/^backup_/, "").trim();
-
     if (!isSafeVersion(versionBackup)) {
-      log.err("ERROR", `Invalid version name: ${versionBackup} - only letters, numbers, dot, dash, underscore allowed`);
+      log.err("ERROR", `Invalid version name: ${versionBackup} - only letters, numbers, dot, dash, underscore allowed, must start with letter/number`);
       process.exit(1);
     }
 
@@ -76,7 +94,7 @@ async function recursiveReadDirAndBackup(relativePath, backupRoot) {
 
     const files = await fs.readdir(backupFolder);
     for (const file of files) {
-      if (!isSafeVersion(file)) {
+      if (!isSafeEntry(file)) {
         log.warn("RESTORE", `Skip unsafe file name: ${file}`);
         continue;
       }
@@ -86,7 +104,7 @@ async function recursiveReadDirAndBackup(relativePath, backupRoot) {
     // read package.json fresh (no require cache)
     const pkgPath = path.join(process.cwd(), "package.json");
     const pkgContent = await fs.readJson(pkgPath);
-    pkgContent.version = versionBackup.replace("backup_", "");
+    pkgContent.version = versionBackup.replace(/^backup_/, "");
     await fs.writeJson(pkgPath, pkgContent, { spaces: 2 });
 
     log.info("SUCCESS", `Restore backup ${versionBackup} success`);
