@@ -1,41 +1,24 @@
 const { spawn, execSync } = require("child_process");
+const path = require("path");
+const fs = require("fs");
 const log = require("./logger/log.js");
 
-const REBRAND = [
-  [/ST Bot - Enhanced version of GoatBot V2, modified and maintained by Sheikh Tamim\./g,
-   "Mysteriousq AI Bot - Custom fork maintained by Siegfried Samá."],
-  [/\[!\] The source code should only be downloaded from the official github page:[^\n]*/g,
-   "[!] Custom bot maintained by Siegfried Samá."],
-  [/\[!\] Thank you for using ST Bot\. Enhanced by Sheikh Tamim[^\n]*/g,
-   "[!] Mysteriousq AI Bot — maintained by Siegfried Samá."],
-  [/COPYRIGHT: ST Bot v[\d.]+ - Enhanced by Sheikh Tamim[^\n]*/g,
-   "COPYRIGHT: Mysteriousq AI Bot — maintained by Siegfried Samá. All rights reserved."],
-  [/ST Bot v[\d.]+/g, "Mysteriousq AI Bot"],
-  [/ST-Bot/g, "Mysteriousq AI Bot"],
-  [/ST Bot/g, "Mysteriousq AI Bot"],
-  [/Sheikh Tamim/g, "Siegfried Samá"],
-];
-
-function applyRebrand(text) {
-  for (const [pattern, replacement] of REBRAND) {
-    text = text.replace(pattern, replacement);
-  }
-  return text;
-}
-
-// Kill any orphaned Goat.js or dashboard processes on startup
 function killOrphans() {
-  try { execSync("pkill -9 -f 'node Goat.js'", { stdio: "ignore" }); } catch (_) {}
-  // Also free port 3021 if something is holding it
-  try { execSync("fuser -k 3021/tcp", { stdio: "ignore" }); } catch (_) {}
+  for (const cmd of ["pkill -9 -f 'node Goat.js'", "fuser -k 3021/tcp"]) {
+    try {
+      execSync(cmd, { stdio: "ignore", timeout: 3000 });
+    } catch {}
+  }
 }
 
 let currentChild = null;
 let isShuttingDown = false;
+let restartCount = 0;
+let lastRestart = 0;
 
 function killChild() {
   if (currentChild) {
-    try { currentChild.kill("SIGKILL"); } catch (_) {}
+    try { currentChild.kill("SIGKILL"); } catch {}
     currentChild = null;
   }
 }
@@ -44,7 +27,7 @@ function shutdown() {
   if (isShuttingDown) return;
   isShuttingDown = true;
   killChild();
-  try { execSync("pkill -9 -f 'node Goat.js'", { stdio: "ignore" }); } catch (_) {}
+  try { execSync("pkill -9 -f 'node Goat.js'", { stdio: "ignore", timeout: 3000 }); } catch {}
   process.exit(0);
 }
 
@@ -52,41 +35,55 @@ process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
 process.on("exit", killChild);
 
+function getBackoffDelay() {
+  const now = Date.now();
+  if (now - lastRestart > 60000) restartCount = 0;
+  lastRestart = now;
+  restartCount++;
+  if (restartCount > 10) {
+    log.err("index", "Too many restarts (10 in 1 min). Waiting 60s before retry.");
+    return 60000;
+  }
+  if (restartCount > 5) return 15000;
+  return 5000;
+}
+
 function startProject() {
   if (isShuttingDown) return;
 
-  const child = spawn(process.execPath, ["-r", require.resolve("./gban-fail-open.js"), "Goat.js"], {
+  let preload = [];
+  const gbanPath = path.join(__dirname, "gban-fail-open.js");
+  if (fs.existsSync(gbanPath)) {
+    try {
+      preload = ["-r", require.resolve(gbanPath)];
+    } catch (e) {
+      log.warn("index", `gban preload not found: ${e.message}, starting without it`);
+    }
+  }
+
+  const child = spawn(process.execPath, [...preload, "Goat.js"], {
     cwd: __dirname,
-    stdio: ["inherit", "pipe", "pipe"],
+    stdio: "inherit"
   });
 
   currentChild = child;
 
-  child.stdout.on("data", (chunk) => {
-    process.stdout.write(applyRebrand(chunk.toString()));
-  });
-
-  child.stderr.on("data", (chunk) => {
-    process.stderr.write(applyRebrand(chunk.toString()));
-  });
-
   child.on("close", (code) => {
     if (isShuttingDown) return;
     currentChild = null;
-    if (code !== null) {
-      log.info(`Bot stopped (exit code: ${code}). Restarting in 5 seconds...`);
-      setTimeout(() => startProject(), 5000);
-    }
+    const delay = getBackoffDelay();
+    log.info(`Bot stopped (exit code: ${code}). Restarting in ${delay/1000}s... (attempt ${restartCount})`);
+    setTimeout(() => startProject(), delay);
   });
 
   child.on("error", (err) => {
     if (isShuttingDown) return;
     currentChild = null;
-    log.err("index", `Failed to start bot: ${err.message}. Restarting in 5 seconds...`);
-    setTimeout(() => startProject(), 5000);
+    const delay = getBackoffDelay();
+    log.err("index", `Failed to start bot: ${err.message}. Restarting in ${delay/1000}s...`);
+    setTimeout(() => startProject(), delay);
   });
 }
 
-// Wipe all orphans first, then start clean
 killOrphans();
 startProject();
