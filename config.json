@@ -1,11 +1,11 @@
 {
   "mainThreadId": "2349229388914312",
-  "ownerName": "Suman", 
-  "godUID": "61579681288069",
+  "ownerName": "NIGG", 
+  "godUID": "61593117279214",
   "notesMainThreadId": "MANDATORY: Set your main thread ID here. Use the 'tid' command to get your thread ID, then paste it here and restart the bot.",
   "botAccount": {
-    "email": "harukiizxian@gmail.com",
-    "password": "candy321",
+    "email": "xxemperador0@gmail.com",
+    "password": "emperador001Xx",
     "twoFactorCode": "",
     "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6.2 Safari/605.1.15",
     "autoUseWhenEmpty": true,
@@ -45,7 +45,7 @@
     "ignoreCommand": []
   },
   "adminBot": [
-    "61579681288069"
+    "61593117279214"
   ],
   "whiteListMode": {
     "enable": false,
@@ -177,7 +177,7 @@
     "reactByUnsend": {
       "enable": true,
       "emojis": [
-        "👍"
+        "😒"
       ]
     },
     "reactByRemove": {
