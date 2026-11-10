@@ -1,66 +1,100 @@
 const fs = require("fs-extra");
+const path = require("path");
 const readline = require("readline");
 const log = require('./logger/log.js');
 
 let versionBackup;
+
 const rl = readline.createInterface({
-	input: process.stdin,
-	output: process.stdout
+  input: process.stdin,
+  output: process.stdout
 });
 
-function recursiveReadDirAndBackup(pathFileOrFolder) {
-	const pathFileOrFolderBackup = `${process.cwd()}/${versionBackup}/${pathFileOrFolder}`;
-	const pathFileOrFolderRestore = `${process.cwd()}/${pathFileOrFolder}`;
+function isSafeVersion(str) {
+  return /^[a-zA-Z0-9._-]+$/.test(str);
+}
 
-	if (fs.lstatSync(pathFileOrFolderBackup).isDirectory()) {
-		if (!fs.existsSync(pathFileOrFolderRestore))
-			fs.mkdirSync(pathFileOrFolderRestore);
-		const readDir = fs.readdirSync(pathFileOrFolderBackup);
-		readDir.forEach(fileOrFolder => {
-			recursiveReadDirAndBackup(`${pathFileOrFolder}/${fileOrFolder}`);
-		});
-	}
-	else {
-		pathFileOrFolder = pathFileOrFolder
-			.replace(/\\/g, '/');
-		fs.copyFileSync(pathFileOrFolderBackup, pathFileOrFolderRestore);
-	}
+async function recursiveReadDirAndBackup(relativePath, backupRoot) {
+  const backupPath = path.join(backupRoot, relativePath);
+  const restorePath = path.join(process.cwd(), relativePath);
+
+  let stat;
+  try {
+    stat = await fs.lstat(backupPath);
+  } catch {
+    log.warn("RESTORE", `Skip missing: ${relativePath}`);
+    return;
+  }
+
+  if (stat.isSymbolicLink()) {
+    log.warn("RESTORE", `Skip symlink (security): ${relativePath}`);
+    return;
+  }
+
+  if (stat.isDirectory()) {
+    await fs.ensureDir(restorePath);
+    const entries = await fs.readdir(backupPath);
+    for (const entry of entries) {
+      await recursiveReadDirAndBackup(path.join(relativePath, entry), backupRoot);
+    }
+  } else if (stat.isFile()) {
+    await fs.ensureDir(path.dirname(restorePath));
+    await fs.copy(backupPath, restorePath, { overwrite: true });
+  }
 }
 
 (async () => {
-	if (process.argv.length < 3) {
-		versionBackup = await new Promise((resolve) => {
-			rl.question("Input version backup: ", answer => {
-				resolve(answer);
-			});
-		});
-	}
-	else {
-		versionBackup = process.argv[2];
-	}
+  try {
+    if (process.argv.length < 3) {
+      versionBackup = await new Promise((resolve) => {
+        rl.question("Input version backup: ", answer => resolve(answer.trim()));
+      });
+    } else {
+      versionBackup = process.argv[2];
+    }
 
-	if (!versionBackup) {
-		log.error("ERROR", `Please input version backup`);
-		process.exit();
-	}
+    if (!versionBackup) {
+      log.err("ERROR", "Please input version backup");
+      process.exit(1);
+    }
 
-	versionBackup = versionBackup.replace("backup_", ""); // remove backup_ if exists (may be user input backup_1.0.0)
-	versionBackup = `backup_${versionBackup}`;
+    // sanitize: remove backup_ prefix if user typed it, then validate
+    versionBackup = versionBackup.replace(/^backup_/, "").trim();
 
-	const backupFolder = `${process.cwd()}/backups/${versionBackup}`;
-	if (!fs.existsSync(backupFolder)) {
-		log.error("ERROR", `Backup folder is not exists (${backupFolder})`);
-		process.exit();
-	}
+    if (!isSafeVersion(versionBackup)) {
+      log.err("ERROR", `Invalid version name: ${versionBackup} - only letters, numbers, dot, dash, underscore allowed`);
+      process.exit(1);
+    }
 
-	const files = fs.readdirSync(backupFolder);
-	for (const file of files)
-		recursiveReadDirAndBackup(file);
+    versionBackup = `backup_${versionBackup}`;
+    const backupFolder = path.join(process.cwd(), "backups", versionBackup);
 
-	const packageJson = require(`${process.cwd()}/package.json`);
-	packageJson.version = versionBackup.replace("backup_", "");
-	fs.writeFileSync(`${process.cwd()}/package.json`, JSON.stringify(packageJson, null, 2));
+    if (!await fs.pathExists(backupFolder)) {
+      log.err("ERROR", `Backup folder does not exist (${backupFolder})`);
+      process.exit(1);
+    }
 
-	log.info("SUCCESS", `Restore backup ${versionBackup} success`);
+    const files = await fs.readdir(backupFolder);
+    for (const file of files) {
+      if (!isSafeVersion(file)) {
+        log.warn("RESTORE", `Skip unsafe file name: ${file}`);
+        continue;
+      }
+      await recursiveReadDirAndBackup(file, backupFolder);
+    }
+
+    // read package.json fresh (no require cache)
+    const pkgPath = path.join(process.cwd(), "package.json");
+    const pkgContent = await fs.readJson(pkgPath);
+    pkgContent.version = versionBackup.replace("backup_", "");
+    await fs.writeJson(pkgPath, pkgContent, { spaces: 2 });
+
+    log.info("SUCCESS", `Restore backup ${versionBackup} success`);
+  } catch (err) {
+    log.err("ERROR", `Restore failed: ${err.message}`);
+    console.error(err);
+    process.exit(1);
+  } finally {
+    rl.close();
+  }
 })();
-
